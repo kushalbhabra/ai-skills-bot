@@ -2,21 +2,20 @@
 
 A standalone Next.js chatbot using [Vercel AI SDK](https://sdk.vercel.ai) + [just-bash](https://github.com/vercel-labs/just-bash) InMemoryFs + [bash-tool](https://github.com/vercel-labs/bash-tool) skills.
 
-Each chat message spins up a fresh isolated `just-bash` InMemoryFs sandbox. No Docker, no VMs, no external services.
+Each chat session gets a persistent `just-bash` InMemoryFs sandbox — files written in one turn are available in the next. No Docker, no VMs, no external services.
 
 ## How it works
 
 ```
 User message
     ↓
-POST /api/chat
+POST /api/chat  (body includes chatId from useChat)
     ↓
-createSkillTool({ skillsDirectory: "./skills" })
-  → reads SKILL.md files, collects shell scripts
+getSkillTools()         ← cached after first request (static files)
     ↓
-createBashTool({ files })
-  → creates fresh just-bash InMemoryFs sandbox
-  → pre-loads skill scripts into /workspace/skills/
+getSessionBashTools(chatId)
+  → first turn:  createBashTool() → new InMemoryFs sandbox stored by chatId
+  → later turns: reuse same sandbox (files persist across messages)
     ↓
 streamText({ tools: { skill, bash }, maxSteps: 20 })
   → AI calls skill("csv") to get instructions
@@ -30,12 +29,26 @@ streamText({ tools: { skill, bash }, maxSteps: 20 })
 git clone https://github.com/kushalbhabra/ai-skills-bot.git
 cd ai-skills-bot
 npm install
-cp .env.example .env.local
-# edit .env.local and add your ANTHROPIC_API_KEY
+cp .env.example .env
+# add your model credentials to .env (see Model configuration below)
 npm run dev
 ```
 
 Open http://localhost:3000.
+
+## Model configuration
+
+Provider is selected by priority. Set credentials for exactly one option in `.env`.
+
+| Priority | Provider | Required env vars |
+|----------|----------|-------------------|
+| 1 | **GitHub Models** | `GITHUB_TOKEN`, `GITHUB_MODEL` |
+| 2 | **Azure OpenAI** | `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_ENDPOINT` |
+| 3 | **Anthropic** | `ANTHROPIC_API_KEY` |
+
+GitHub Models is the recommended option — create a token at https://github.com/settings/tokens and browse models at https://github.com/marketplace/models.
+
+If the Azure endpoint contains `models.github.ai`, the OpenAI-compatible `/v1` path is used automatically.
 
 ## Skills
 
@@ -59,7 +72,8 @@ Open http://localhost:3000.
 
 ## Key design decisions
 
-- **InMemoryFs per request**: Each POST creates a completely fresh sandbox. No state leaks between users or messages.
+- **Session-scoped sandbox**: Each chat session gets one persistent `just-bash` InMemoryFs sandbox keyed by `chatId`. Files written in turn 1 survive into turn 2+, enabling multi-step workflows like upload → analyze → filter.
+- **Skill cache**: Skill SKILL.md files are read from disk once per server lifetime and reused across all requests.
 - **No external sandbox**: `just-bash` runs entirely in-process. Zero infra cost, works on Vercel.
-- **Skills as files**: Shell scripts are loaded into the virtual FS at startup. The AI uses the `skill` tool to discover instructions, then `bash` to run scripts.
+- **Skills as files**: Shell scripts are loaded into the virtual FS at sandbox creation. The AI uses the `skill` tool to discover instructions, then `bash` to run scripts.
 - **`stopWhen: stepCountIs(20)`**: Allows the AI to chain multiple tool calls (load skill → write file → run script → run another script).
